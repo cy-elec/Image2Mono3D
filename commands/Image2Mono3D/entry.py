@@ -112,9 +112,17 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
 	selectionInput.isEnabled = False
 
 	# Create image height distance
-	initialValue = adsk.core.ValueInput.createByReal(0)
+	initialValue = adsk.core.ValueInput.createByReal(0.1)
 	heightInput = inputs.addDistanceValueCommandInput('heightSelector', 'Height', initialValue)
 	heightInput.isVisible = False
+	heightInput.minimumValue = 0
+	heightInput.isMinimumValueInclusive = False
+
+	# min thickness input
+	initialValue = adsk.core.ValueInput.createByReal(0.1)
+	minThicknessInput = inputs.addDistanceValueCommandInput('minThicknessSelector', 'Minimum Depth', initialValue)
+	minThicknessInput.minimumValue = 0
+	minThicknessInput.isMinimumValueInclusive = False
 
 	# Mode selection
 	modeInput = inputs.addBoolValueInput('modeSelector', 'Flush Surface', True, '', True)
@@ -149,13 +157,16 @@ def command_execute(args: adsk.core.CommandEventArgs):
 	baseSelectorInput = adsk.core.SelectionCommandInput.cast(inputs.itemById('baseSelector'))
 	edgeSelectorInput = adsk.core.SelectionCommandInput.cast(inputs.itemById('heightEdgeSelector'))
 	heightInput = adsk.core.DistanceValueCommandInput.cast(inputs.itemById('heightSelector'))
+	modeInput = adsk.core.BoolValueCommandInput.cast(inputs.itemById('modeSelector'))
+	fixBrokenInput = adsk.core.BoolValueCommandInput.cast(inputs.itemById('fixBrokenSelector'))
+	minThicknessInput = adsk.core.DistanceValueCommandInput.cast(inputs.itemById('minThicknessSelector'))
 
 	face = adsk.fusion.BRepFace.cast(faceSelectorInput.selection(0).entity)
 	base = adsk.fusion.BRepEdge.cast(baseSelectorInput.selection(0).entity)
 
 	progressDialog = ui.createProgressDialog()
 	progressDialog.cancelButtonText = 'Cancel'
-	progressDialog.isBackgroundTranslucent = True
+	progressDialog.isBackgroundTranslucent = False
 	progressDialog.isCancelButtonShown = True
 
 	if face is None or base is None:
@@ -169,14 +180,15 @@ def command_execute(args: adsk.core.CommandEventArgs):
 		image = loadedImage
 		imageWidth, imageHeight = image.size
 
+		patternDepth = 0.1
 		
 		if imageWidth*imageHeight > 2500 and ui.messageBox(f'This process can take several minutes depending on the size of the image.\nContinue?\n\nPixels to be processed: {imageWidth*imageHeight}','Expensive Operations Warning', adsk.core.MessageBoxButtonTypes.OKCancelButtonType) != adsk.core.DialogResults.DialogOK:
 			return
 
-		progressDialog.show('Generating Mono3D', 'Applying pattern. (Fusion)', 0, imageWidth*imageHeight, 0)
+		progressDialog.show('Generating Mono3D', 'Applying pattern. (Fusion360)', 0, 256, 0)
 		
-		
-		cmPerPixel = (base.length/imageWidth, 0)
+		widthInputValue = base.length
+		cmPerPixel = (widthInputValue/imageWidth, 0)
 
 		heightInputValue = cmPerPixel[0]*imageHeight
 		if edgeSelectorInput.isVisible:
@@ -218,95 +230,137 @@ def command_execute(args: adsk.core.CommandEventArgs):
 		pixelFWidthVector.scaleBy(imageWidth)
 
 		# Outline Image region height
-		v2 = pixelHeightVector.copy()
-		v2.scaleBy(imageHeight)
 		tv = origin.geometry.asVector()
-		tv.add(v2)
-		heightEndPoint = tv.asPoint()
+		tv.add(pixelFHeightVector)
 
-		heightSketchLine: adsk.fusion.SketchLine = sketchLines.addByTwoPoints(origin, heightEndPoint)
+		heightSketchLine: adsk.fusion.SketchLine = sketchLines.addByTwoPoints(origin, tv.asPoint())
 		
+		# TODO calc body thickness (not with depth Edge)
+
+		# find depth Edge
+		depthEdge = None
+		for bedges in face.body.edges:
+			bedgeVect = bedges.evaluator.getEndPoints()[1].vectorTo(bedges.evaluator.getEndPoints()[2])
+			if not bedgeVect.isParallelTo(face.evaluator.getNormalAtPoint(origin.worldGeometry)[1]):
+				continue
+			if bedges.startVertex == base.startVertex or bedges.startVertex == base.endVertex or bedges.endVertex == base.startVertex or bedges.endVertex == base.endVertex:
+				depthEdge = bedges
+				break
+		if depthEdge is None:
+			raise Exception('Cannot determine object depth.')
+
+		depthEdgeLength = depthEdge.length
+
+		if minThicknessInput.value >= depthEdgeLength:
+			raise Exception('Minimum Depth exceeds object depth.')
+
+		# Outline Image depth
+		nv = face.evaluator.getNormalAtPoint(origin.worldGeometry)[1]
+		nv.normalize()
+		nv.scaleBy(-depthEdgeLength)
+		tv = origin.geometry.asVector()
+		tv.add(nv)
+		depthSketchLine: adsk.fusion.SketchLine = sketchLines.addByTwoPoints(origin, tv.asPoint())
+
 		# Create Pattern
 		iv1 = origin.geometry.asVector()
 		iv1.add(pixelHeightVector)
 		iv1.add(pixelWidthVector)
 		rectangle = sketchLines.addTwoPointRectangle(origin.geometry, iv1.asPoint())
-		inputEntities = adsk.core.ObjectCollection.create()
+		inputProfiles = adsk.core.ObjectCollection.create()
 		notProf = sketch.profiles.item(0)
 		for p in sketch.profiles:
-			inputEntities.add(p)
+			inputProfiles.add(p)
 			if p.areaProperties().area > notProf.areaProperties().area:
 				notProf = p
 		
-		inputEntities.removeByItem(notProf)
-		extrude = extrudes.addSimple(inputEntities, adsk.core.ValueInput.createByReal(0.01), adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+		inputProfiles.removeByItem(notProf)
+		extrude = extrudes.addSimple(inputProfiles, adsk.core.ValueInput.createByReal(patternDepth), adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+
+
 		
+		# fixBroken
+		if fixBrokenInput.value:
+			# Create boundaries
+			tv = origin.geometry.asVector()
+			tv.add(pixelFHeightVector)
+			tv.add(pixelFWidthVector)
+			sketchLines.addTwoPointRectangle(origin, tv.asPoint())
+
+			outlineProfiles = adsk.core.ObjectCollection.createWithArray([x for x in sketch.profiles])
+			extrudeInput = extrudes.createInput(outlineProfiles, adsk.fusion.FeatureOperations.JoinFeatureOperation)
+			extrudeInput.participantBodies = [face.body]
+			extrudeInput.isSolid = True
+			extrudeInput.setOneSideExtent(adsk.fusion.DistanceExtentDefinition.create(adsk.core.ValueInput.createByReal(depthEdgeLength)), adsk.fusion.ExtentDirections.NegativeExtentDirection)
+			extrudes.add(extrudeInput)
+			
 		inputEntities = adsk.core.ObjectCollection.create()
 		inputEntities.add(extrude.bodies.item(0))
 
-		rectangularPatternsInput = rectangularPatterns.createInput(inputEntities, baseSketchLine, adsk.core.ValueInput.createByReal(imageWidth), adsk.core.ValueInput.createByReal(base.length-cmPerPixel[0]), adsk.fusion.PatternDistanceType.ExtentPatternDistanceType)
+		rectangularPatternsInput = rectangularPatterns.createInput(inputEntities, baseSketchLine, adsk.core.ValueInput.createByReal(imageWidth), adsk.core.ValueInput.createByReal(widthInputValue-cmPerPixel[0]), adsk.fusion.PatternDistanceType.ExtentPatternDistanceType)
 		rectangularPatternsInput.setDirectionTwo(heightSketchLine, adsk.core.ValueInput.createByReal(imageHeight), adsk.core.ValueInput.createByReal(heightInputValue-cmPerPixel[1]))
 		rectangularFeature = rectangularPatterns.add(rectangularPatternsInput)
+	
+		pixelBodies = [extrude.bodies.item(0)]+[b for b in rectangularFeature.bodies]
+		
+		# Extruding
+		progressDialog.message = 'Extruding: %p% - %v/%m shades'
+		
+		faceNormal = face.evaluator.getNormalAtPoint(face.centroid)[1]
+		faceNormal.normalize()
 
+		loadedImage = loadedImage.transpose(Image.FLIP_TOP_BOTTOM)
+		imageAsLine = list(loadedImage.getdata())
+
+		colorBodyMapping = {}
+		for e in range(0, imageHeight*imageWidth):
+			colorBodyMapping.setdefault(imageAsLine[e], []).append(pixelBodies[e])
+
+		futil.log('Image Raw: '+str(imageAsLine))
+		futil.log(str(depthEdgeLength))
+
+		# Iterate through color spectrum
+		for e in range(256):
+			if progressDialog.wasCancelled:
+				break
+			if e not in colorBodyMapping:
+				continue
+			
+			# Gather all Top Faces
+			extrudeFaces = adsk.core.ObjectCollection.create()
+			for body in colorBodyMapping[e]:
+				extrudeFace = None
+				for f in body.faces:
+					fn = f.evaluator.getNormalAtPoint(f.centroid)[1]
+					fn.normalize()
+					if fn.isEqualTo(faceNormal):
+						extrudeFace = f
+						break
+				if extrudeFace is None:
+					raise Exception('Cannot find top face of colorBody')
+				extrudeFaces.add(extrudeFace)
+
+			pixelDistance = (depthEdgeLength-minThicknessInput.value)/255*e
+			futil.log(f'PixelGroup: {e} Distance: {pixelDistance}')
+			futil.log(f'\tPixels: {len(colorBodyMapping[e])}')
+			extrudeInput = extrudes.createInput(extrudeFaces, adsk.fusion.FeatureOperations.CutFeatureOperation)
+			extrudeInput.participantBodies = [face.body] + colorBodyMapping[e]
+			extrudeInput.isSolid = True
+			extrudeInput.setOneSideExtent(adsk.fusion.DistanceExtentDefinition.create(adsk.core.ValueInput.createByReal(pixelDistance+patternDepth)), adsk.fusion.ExtentDirections.NegativeExtentDirection)
+			extrudes.add(extrudeInput)
+			progressDialog.progressValue = e+1
+	
 
 		# Merge everything
-		
-		progressDialog.message = 'Merging. (Fusion)'
-		
-		combineFeatures = design.rootComponent.features.combineFeatures
-		
-		combineObjects = adsk.core.ObjectCollection.createWithArray([r for r in rectangularFeature.bodies])
-		combineInput = combineFeatures.createInput(face.body, combineObjects)
-		combineInput.operation = adsk.fusion.FeatureOperations.JoinFeatureOperation
-		combineFeatures.add(combineInput)
-		
-		# itv1 = origin.geometry.asVector()
-		# itv2 = itv1.copy()
-		# for y in range(imageHeight):
-		# 	for x in range(imageWidth):
-		# 		if progressDialog.wasCancelled:
-		# 			break
-		# 		iv1 = itv2.copy()
-		# 		iv1.add(pixelHeightVector)
-		# 		iv1.add(pixelWidthVector)
-		# 		rectangle = sketchLines.addTwoPointRectangle(itv2.asPoint(), iv1.asPoint())
-		# 		itv2.add(pixelWidthVector)
-		# 		progressDialog.progressValue = y*imageHeight+x
-
-		# 	itv1.add(pixelHeightVector)
-		# 	itv2 = itv1.copy()
-
-
-		# itv1 = origin.geometry.asVector()
-		# itv2 = itv1.copy()
-		# itv2.add(pixelFWidthVector)
-		# for y in range(imageHeight):
-		# 	if progressDialog.wasCancelled:
-		# 		break
-		# 	itv1.add(pixelHeightVector)
-		# 	itv2.add(pixelHeightVector)
+		if not progressDialog.wasCancelled:
+			progressDialog.message = 'Merging. (Fusion360)'
 			
-		# 	sketchLines.addByTwoPoints(itv1.asPoint(), itv2.asPoint())
-		# 	progressDialog.progressValue = int((y*imageWidth)/2)
-			
+			combineFeatures = design.rootComponent.features.combineFeatures
 		
-		# itv1 = origin.geometry.asVector()
-		# itv2 = itv1.copy()
-		# itv2.add(pixelFHeightVector)
-		# for x in range(imageWidth):
-		# 	if progressDialog.wasCancelled:
-		# 		break
-		# 	itv1.add(pixelWidthVector)
-		# 	itv2.add(pixelWidthVector)
-		# 	sketchLines.addByTwoPoints(itv1.asPoint(), itv2.asPoint())
-		# 	progressDialog.progressValue = int((imageWidth*imageHeight+x*imageHeight)/2)
-
-		progressDialog.message = 'Extruding: %p% - %v/%m pixels'
-		
-		#for e in range(1, imageHeight*imageWidth):
-	#		prof = sketch.profiles.item(e)
-	#		extrude = extrudes.addSimple(prof, adsk.core.ValueInput.createByReal(10), adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
-	#		progressDialog.progressValue = e
+			combineObjects = adsk.core.ObjectCollection.createWithArray([r for r in rectangularFeature.bodies])
+			combineInput = combineFeatures.createInput(face.body, combineObjects)
+			combineInput.operation = adsk.fusion.FeatureOperations.JoinFeatureOperation
+			combineFeatureList = combineFeatures.add(combineInput)
 
 		if progressDialog.wasCancelled:
 			args.executeFailed = True
@@ -314,10 +368,10 @@ def command_execute(args: adsk.core.CommandEventArgs):
 		progressDialog.hide()
 	except:
 		futil.log(f'Exception caught: {traceback.format_exc()}')
-		ui.messageBox('Error processing design')
 		args.executeFailed = True
+		args.executeFailedMessage = 'Error processing design.\n\n\n\n'+traceback.format_exc()
 
-	
+
 
 
 # This event handler is called when the command needs to compute a new preview in the graphics window.
@@ -333,6 +387,8 @@ def command_preview(args: adsk.core.CommandEventArgs):
 	baseSelectorInput = adsk.core.SelectionCommandInput.cast(inputs.itemById('baseSelector'))
 	edgeSelectorInput = adsk.core.SelectionCommandInput.cast(inputs.itemById('heightEdgeSelector'))
 	heightInput = adsk.core.DistanceValueCommandInput.cast(inputs.itemById('heightSelector'))
+	modeInput = adsk.core.BoolValueCommandInput.cast(inputs.itemById('modeSelector'))
+	fixBrokenInput = adsk.core.BoolValueCommandInput.cast(inputs.itemById('fixBrokenSelector'))
 
 	face = adsk.fusion.BRepFace.cast(faceSelectorInput.selection(0).entity)
 	base = adsk.fusion.BRepEdge.cast(baseSelectorInput.selection(0).entity)
@@ -347,7 +403,8 @@ def command_preview(args: adsk.core.CommandEventArgs):
 	try:
 		image = loadedImage
 		imageWidth, imageHeight = image.size
-		cmPerPixel = (base.length/imageWidth, 0)
+		widthInputValue = base.length
+		cmPerPixel = (widthInputValue/imageWidth, 0)
 
 		heightInputValue = cmPerPixel[0]*imageHeight
 		if edgeSelectorInput.isVisible:
@@ -361,6 +418,7 @@ def command_preview(args: adsk.core.CommandEventArgs):
 		# Create new sketch, obtain creation objects
 		sketch = design.rootComponent.sketches.add(face)
 		sketchLines = sketch.sketchCurves.sketchLines
+		extrudes = design.rootComponent.features.extrudeFeatures
 
 		# Outline Image region width
 		baseSketchLine: adsk.fusion.SketchLine = sketch.project(base)[0]
@@ -388,13 +446,37 @@ def command_preview(args: adsk.core.CommandEventArgs):
 		pixelFWidthVector.scaleBy(imageWidth)
 
 		# Outline Image region height
-		v2 = pixelHeightVector.copy()
-		v2.scaleBy(imageHeight)
 		tv = sketchOrigin.geometry.asVector()
-		tv.add(v2)
-		heightEndPoint = tv.asPoint()
+		tv.add(pixelFHeightVector)
 
-		heightSketchLine: adsk.fusion.SketchLine = sketchLines.addByTwoPoints(sketchOrigin, heightEndPoint)
+		heightSketchLine: adsk.fusion.SketchLine = sketchLines.addByTwoPoints(sketchOrigin, tv.asPoint())
+		
+		# Create boundaries
+		tv.add(pixelFWidthVector)
+		sketchLines.addTwoPointRectangle(sketchOrigin, tv.asPoint())
+
+		# find depth Edge
+		depthEdge = None
+		for bedges in face.body.edges:
+			bedgeVect = bedges.evaluator.getEndPoints()[1].vectorTo(bedges.evaluator.getEndPoints()[2])
+			if not bedgeVect.isParallelTo(face.evaluator.getNormalAtPoint(sketchOrigin.worldGeometry)[1]):
+				continue
+			if bedges.startVertex == base.startVertex or bedges.startVertex == base.endVertex or bedges.endVertex == base.startVertex or bedges.endVertex == base.endVertex:
+				depthEdge = bedges
+				break
+		if depthEdge is None:
+			raise Exception('Cannot determine object depth.')
+
+		# Outline Image depth
+		nv = face.evaluator.getNormalAtPoint(sketchOrigin.worldGeometry)[1]
+		nv.normalize()
+		nv.scaleBy(-depthEdge.length)
+		tv = sketchOrigin.geometry.asVector()
+		tv.add(nv)
+		depthSketchLine: adsk.fusion.SketchLine = sketchLines.addByTwoPoints(sketchOrigin, tv.asPoint())
+		
+		# prepare extrusion, wait for canvas
+		inputProfiles = adsk.core.ObjectCollection.createWithArray([x for x in sketch.profiles])
 		
 		# Save image as tmpFile to use as Canvas, tmp file is deleted after with scope
 		global tempFileName
@@ -430,6 +512,11 @@ def command_preview(args: adsk.core.CommandEventArgs):
 			canvasInput.transform = matrix
 			canvasInput.opacity = 100
 			canvas = design.rootComponent.canvases.add(canvasInput)
+
+		# extrude after canvas
+		if fixBrokenInput.value:
+			extrude = extrudes.addSimple(inputProfiles, adsk.core.ValueInput.createByReal(-depthEdge.length), adsk.fusion.FeatureOperations.JoinFeatureOperation)
+
 
 	except:
 		futil.log(f'Exception caught: {traceback.format_exc()}')
@@ -477,6 +564,7 @@ def command_input_changed(args: adsk.core.InputChangedEventArgs):
 			modeInput.isEnabled = True
 			baseSelectionInput.isVisible = True
 			baseSelectionInput.isEnabled = True
+			
 		except:
 			futil.log(f'Exception caught: {traceback.format_exc()}')
 			modeInput.isEnabled = False
@@ -554,10 +642,6 @@ def command_validate_input(args: adsk.core.ValidateInputsEventArgs):
 	# General logging for debug.
 	futil.log(f'{CMD_NAME} Validate Input Event')
 	inputs = args.inputs
-	
-	distanceInput = adsk.core.DistanceValueCommandInput.cast(inputs.itemById('heightSelector'))
-	if distanceInput.isVisible and not distanceInput.value > 0:
-		args.areInputsValid = False
 
 	fileNameInput = adsk.core.StringValueCommandInput.cast(inputs.itemById('selectedFileName'))
 	if not len(fileNameInput.value) > 0:
