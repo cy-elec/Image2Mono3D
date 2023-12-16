@@ -236,6 +236,7 @@ def command_execute(args: adsk.core.CommandEventArgs):
 		heightSketchLine: adsk.fusion.SketchLine = sketchLines.addByTwoPoints(origin, tv.asPoint())
 		
 		# TODO calc body thickness (not with depth Edge)
+		# TODO stretch interior option
 
 		# find depth Edge
 		depthEdge = None
@@ -325,7 +326,7 @@ def command_execute(args: adsk.core.CommandEventArgs):
 				break
 			if e not in colorBodyMapping:
 				continue
-			
+
 			# Gather all Top Faces
 			extrudeFaces = adsk.core.ObjectCollection.create()
 			for body in colorBodyMapping[e]:
@@ -340,19 +341,51 @@ def command_execute(args: adsk.core.CommandEventArgs):
 					raise Exception('Cannot find top face of colorBody')
 				extrudeFaces.add(extrudeFace)
 
-			pixelDistance = (depthEdgeLength-minThicknessInput.value)/255*e
-			futil.log(f'PixelGroup: {e} Distance: {pixelDistance}')
-			futil.log(f'\tPixels: {len(colorBodyMapping[e])}')
-			extrudeInput = extrudes.createInput(extrudeFaces, adsk.fusion.FeatureOperations.CutFeatureOperation)
-			extrudeInput.participantBodies = [face.body] + colorBodyMapping[e]
-			extrudeInput.isSolid = True
-			extrudeInput.setOneSideExtent(adsk.fusion.DistanceExtentDefinition.create(adsk.core.ValueInput.createByReal(pixelDistance+patternDepth)), adsk.fusion.ExtentDirections.NegativeExtentDirection)
-			extrudes.add(extrudeInput)
+
+			if not modeInput.value: # NOT FLUSH
+				
+				pixelDistance = (depthEdgeLength-minThicknessInput.value)/255*e
+				futil.log(f'PixelGroup: {e} Distance: {pixelDistance}')
+				futil.log(f'\tPixels: {len(colorBodyMapping[e])}')
+				extrudeInput = extrudes.createInput(extrudeFaces, adsk.fusion.FeatureOperations.CutFeatureOperation)
+				extrudeInput.participantBodies = [face.body] + colorBodyMapping[e]
+				extrudeInput.isSolid = True
+				extrudeInput.setOneSideExtent(adsk.fusion.DistanceExtentDefinition.create(adsk.core.ValueInput.createByReal(pixelDistance+patternDepth)), adsk.fusion.ExtentDirections.NegativeExtentDirection)
+				extrudes.add(extrudeInput)
+
+			else: # FLUSH
+				
+				pixelDistance = (depthEdgeLength-minThicknessInput.value)/255*e
+				futil.log(f'PixelGroup: {e} Distance: {pixelDistance}')
+				futil.log(f'\tPixels: {len(colorBodyMapping[e])}')
+				extrudeInput = extrudes.createInput(extrudeFaces, adsk.fusion.FeatureOperations.CutFeatureOperation)
+				extrudeInput.participantBodies = [face.body]
+				extrudeInput.isSolid = True
+				extrudeInput.startExtent = adsk.fusion.OffsetStartDefinition.create(adsk.core.ValueInput.createByReal(-(minThicknessInput.value/2+patternDepth)))
+				extrudeInput.setOneSideExtent(adsk.fusion.DistanceExtentDefinition.create(adsk.core.ValueInput.createByReal(pixelDistance)), adsk.fusion.ExtentDirections.NegativeExtentDirection)
+				exf = extrudes.add(extrudeInput)
+				if exf.healthState == adsk.fusion.FeatureHealthStates.WarningFeatureHealthState:
+					exf.deleteMe()
+
+				extrudeInput = extrudes.createInput(extrudeFaces, adsk.fusion.FeatureOperations.CutFeatureOperation)
+				extrudeInput.participantBodies = colorBodyMapping[e]
+				extrudeInput.isSolid = True
+				extrudeInput.setOneSideExtent(adsk.fusion.DistanceExtentDefinition.create(adsk.core.ValueInput.createByReal(patternDepth)), adsk.fusion.ExtentDirections.NegativeExtentDirection)
+				extrudes.add(extrudeInput)
+
 			progressDialog.progressValue = e+1
 	
+		if modeInput.value: # FLUSH
+			
+			outlineProfiles = adsk.core.ObjectCollection.createWithArray([x for x in sketch.profiles])
+			extrudeInput = extrudes.createInput(outlineProfiles, adsk.fusion.FeatureOperations.JoinFeatureOperation)
+			extrudeInput.isSolid = True
+			extrudeInput.setThinExtrude(adsk.fusion.ThinExtrudeWallLocation.Center, adsk.core.ValueInput.createByReal(cmPerPixel[0]/10))
+			extrudeInput.setOneSideExtent(adsk.fusion.DistanceExtentDefinition.create(adsk.core.ValueInput.createByReal(depthEdgeLength)), adsk.fusion.ExtentDirections.NegativeExtentDirection)
+			extrudes.add(extrudeInput)
 
 		# Merge everything
-		if not progressDialog.wasCancelled:
+		if not progressDialog.wasCancelled and not modeInput.value:
 			progressDialog.message = 'Merging. (Fusion360)'
 			
 			combineFeatures = design.rootComponent.features.combineFeatures
