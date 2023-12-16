@@ -236,7 +236,7 @@ def command_execute(args: adsk.core.CommandEventArgs):
 		heightSketchLine: adsk.fusion.SketchLine = sketchLines.addByTwoPoints(origin, tv.asPoint())
 		
 		# TODO calc body thickness (not with depth Edge)
-		# TODO stretch interior option
+		# TODO stretch interior option (add gap at the bottom with param)
 
 		# find depth Edge
 		depthEdge = None
@@ -380,7 +380,7 @@ def command_execute(args: adsk.core.CommandEventArgs):
 			outlineProfiles = adsk.core.ObjectCollection.createWithArray([x for x in sketch.profiles])
 			extrudeInput = extrudes.createInput(outlineProfiles, adsk.fusion.FeatureOperations.JoinFeatureOperation)
 			extrudeInput.isSolid = True
-			extrudeInput.setThinExtrude(adsk.fusion.ThinExtrudeWallLocation.Center, adsk.core.ValueInput.createByReal(cmPerPixel[0]/10))
+			extrudeInput.setThinExtrude(adsk.fusion.ThinExtrudeWallLocation.Center, adsk.core.ValueInput.createByReal(cmPerPixel[0]/5))
 			extrudeInput.setOneSideExtent(adsk.fusion.DistanceExtentDefinition.create(adsk.core.ValueInput.createByReal(depthEdgeLength)), adsk.fusion.ExtentDirections.NegativeExtentDirection)
 			extrudes.add(extrudeInput)
 
