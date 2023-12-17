@@ -1,11 +1,12 @@
 import adsk.core, adsk.fusion
-import os, traceback, tempfile
+import os, traceback, tempfile, math
 from ...lib.PIL import Image
 from ...lib import fusion360utils as futil
 from ... import config
 app = adsk.core.Application.get()
 ui = app.userInterface
 design = adsk.fusion.Design.cast(app.activeProduct)
+measureMgr = app.measureManager
 
 # TODO *** Specify the command identity information. ***
 CMD_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_image2mono3d'
@@ -177,7 +178,7 @@ def command_execute(args: adsk.core.CommandEventArgs):
 	flushBTInput = adsk.core.ValueCommandInput.cast(inputs.itemById('flushBTSelector'))
 	colorShiftCorrectionInput = adsk.core.IntegerSliderCommandInput.cast(inputs.itemById('colorShiftCorrectionSelector'))
 
-	face = adsk.fusion.BRepFace.cast(faceSelectorInput.selection(0).entity)
+	realFace = adsk.fusion.BRepFace.cast(faceSelectorInput.selection(0).entity)
 	base = adsk.fusion.BRepEdge.cast(baseSelectorInput.selection(0).entity)
 
 	progressDialog = ui.createProgressDialog()
@@ -185,7 +186,7 @@ def command_execute(args: adsk.core.CommandEventArgs):
 	progressDialog.isBackgroundTranslucent = False
 	progressDialog.isCancelButtonShown = True
 
-	if face is None or base is None:
+	if realFace is None or base is None:
 		return
 
 	global loadedImage
@@ -193,15 +194,28 @@ def command_execute(args: adsk.core.CommandEventArgs):
 		return
 	
 	try:
+		# tempBrepMgr = adsk.fusion.TemporaryBRepManager.get()
+		# tempBody = tempBrepMgr.copy(realFace.body)
+		# face = None
+		# for f in tempBody.faces:
+		# 	if realFace.evaluator.getNormalAtPoint(realFace.centroid)[1].isEqualTo(f.evaluator.getNormalAtPoint(f.centroid)[1]):
+		# 		face = f
+		# if face is None:
+		# 	ui.messageBox('Could not create temporary object. Execution will be signigicantly slower.')
+		face = realFace 
+
 		image = loadedImage
 		imageWidth, imageHeight = image.size
-
-		patternDepth = 0.1
+		
+		# Load image
+		loadedImage = loadedImage.transpose(Image.FLIP_TOP_BOTTOM)
+		imageAsLine = list(loadedImage.getdata())
+		futil.log('Image Raw: '+str(imageAsLine))
 		
 		if imageWidth*imageHeight > 2500 and ui.messageBox(f'This process can take several minutes depending on the size of the image.\nContinue?\n\nPixels to be processed: {imageWidth*imageHeight}','Expensive Operations Warning', adsk.core.MessageBoxButtonTypes.OKCancelButtonType) != adsk.core.DialogResults.DialogOK:
 			return
 
-		progressDialog.show('Generating Mono3D', 'Applying pattern. (Fusion360)', 0, 256, 0)
+		progressDialog.show('Generating Mono3D', 'Loading...', 0, 100, 0)
 		
 		widthInputValue = base.length
 		cmPerPixel = (widthInputValue/imageWidth, 0)
@@ -277,113 +291,112 @@ def command_execute(args: adsk.core.CommandEventArgs):
 		tv = origin.geometry.asVector()
 		tv.add(nv)
 		depthSketchLine: adsk.fusion.SketchLine = sketchLines.addByTwoPoints(origin, tv.asPoint())
+		sketch.isVisible = False
 
-		# Create Pattern
-		iv1 = origin.geometry.asVector()
-		iv1.add(pixelHeightVector)
-		iv1.add(pixelWidthVector)
-		rectangle = sketchLines.addTwoPointRectangle(origin.geometry, iv1.asPoint())
-		inputProfiles = adsk.core.ObjectCollection.create()
-		notProf = sketch.profiles.item(0)
-		for p in sketch.profiles:
-			inputProfiles.add(p)
-			if p.areaProperties().area > notProf.areaProperties().area:
-				notProf = p
-		
-		inputProfiles.removeByItem(notProf)
-		extrude = extrudes.addSimple(inputProfiles, adsk.core.ValueInput.createByReal(patternDepth), adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
-
-
-		
 		# fixBroken
-		if fixBrokenInput.value:
+		if fixBrokenInput.value and not progressDialog.wasCancelled:
+			
 			# Create boundaries
 			tv = origin.geometry.asVector()
 			tv.add(pixelFHeightVector)
 			tv.add(pixelFWidthVector)
 			sketchLines.addTwoPointRectangle(origin, tv.asPoint())
 
+			tlines = sketchLines.addTwoPointRectangle(origin, tv.asPoint())
 			outlineProfiles = adsk.core.ObjectCollection.createWithArray([x for x in sketch.profiles])
 			extrudeInput = extrudes.createInput(outlineProfiles, adsk.fusion.FeatureOperations.JoinFeatureOperation)
 			extrudeInput.participantBodies = [face.body]
 			extrudeInput.isSolid = True
 			extrudeInput.setOneSideExtent(adsk.fusion.DistanceExtentDefinition.create(adsk.core.ValueInput.createByReal(depthEdgeLength)), adsk.fusion.ExtentDirections.NegativeExtentDirection)
 			extrudes.add(extrudeInput)
-			
-		# TODO replace rectPattern with sketch (no pattern, draw lines, not rects, map profiles to pixels)
 
-		inputEntities = adsk.core.ObjectCollection.createWithArray([extrude])
-		rectangularPatternsInput = rectangularPatterns.createInput(inputEntities, baseSketchLine, adsk.core.ValueInput.createByReal(imageWidth), adsk.core.ValueInput.createByReal(widthInputValue-cmPerPixel[0]), adsk.fusion.PatternDistanceType.ExtentPatternDistanceType)
-		rectangularPatternsInput.patternComputeOption = adsk.fusion.PatternComputeOptions.OptimizedPatternCompute
-		rectangularPatternsInput.setDirectionTwo(heightSketchLine, adsk.core.ValueInput.createByReal(imageHeight), adsk.core.ValueInput.createByReal(heightInputValue-cmPerPixel[1]))
-		rectangularFeature = rectangularPatterns.add(rectangularPatternsInput)
-	
-		pixelBodies = [extrude.bodies.item(0)]+[b for b in rectangularFeature.bodies]
+			for l in tlines:
+				l.deleteMe()
+
+		# Create Pattern
+		progressDialog.message = 'Sketching: %p% - %v/%m'
+		progressDialog.maximumValue = imageWidth
+		iv1 = origin.geometry.asVector()
+		for l in range(imageWidth):
+			if progressDialog.wasCancelled:
+				break
+			iv1.add(pixelWidthVector)
+			iv2 = iv1.copy()
+			iv2.add(pixelFHeightVector)
+			sketchLines.addByTwoPoints(iv1.asPoint(), iv2.asPoint())
+			progressDialog.progressValue = l+1
 		
+		progressDialog.maximumValue = imageHeight
+		iv1 = origin.geometry.asVector()
+		for l in range(imageHeight):
+			if progressDialog.wasCancelled:
+				break
+			iv1.add(pixelHeightVector)
+			iv2 = iv1.copy()
+			iv2.add(pixelFWidthVector)
+			sketchLine = sketchLines.addByTwoPoints(iv1.asPoint(), iv2.asPoint())
+			progressDialog.progressValue = l+1
+
+		# Map Profiles
+		colorProfileMapping = {}
+
+		progressDialog.message = 'Mapping Pixels: %p% - %v/%m'
+		progressDialog.maximumValue = sketch.profiles.count
+		for i, p in enumerate(sketch.profiles):
+			if progressDialog.wasCancelled:
+				break
+			pMidPoint = getPoint3DMidPoint(p.boundingBox.minPoint, p.boundingBox.maxPoint)
+			pHI = int(measureMgr.measureMinimumDistance(baseSketchLine.geometry, pMidPoint).value / cmPerPixel[1])
+			pWI = int(measureMgr.measureMinimumDistance(heightSketchLine.geometry, pMidPoint).value / cmPerPixel[0])
+			pixelIndex = pHI*imageWidth + pWI
+			futil.log(f'{i}/{sketch.profiles.count}: PixelIndex: {pWI}|{pHI} - {pixelIndex} -> {-pixelIndex/(imageHeight*imageWidth)*depthEdgeLength}\n{measureMgr.measureMinimumDistance(heightSketchLine.geometry, pMidPoint).value}')
+			if pixelIndex > imageHeight*imageWidth:
+				futil.log('HERE')#raise Exception(f'HERE {imageWidth}:{imageHeight}')
+			else:
+				colorProfileMapping.setdefault(imageAsLine[pixelIndex], []).append(p)
+			progressDialog.progressValue = i+1
+
 		# Extruding
 		progressDialog.message = 'Extruding: %p% - %v/%m shades'
+		progressDialog.maximumValue = 256
 		
 		faceNormal = face.evaluator.getNormalAtPoint(face.centroid)[1]
 		faceNormal.normalize()
 
-		loadedImage = loadedImage.transpose(Image.FLIP_TOP_BOTTOM)
-		imageAsLine = list(loadedImage.getdata())
-
-		colorBodyMapping = {}
-		for e in range(0, imageHeight*imageWidth):
-			colorBodyMapping.setdefault(imageAsLine[e], []).append(pixelBodies[e])
-
-		futil.log('Image Raw: '+str(imageAsLine))
-		futil.log(str(depthEdgeLength))
+		futil.log(f'Depth: {depthEdgeLength}')
 
 		# Iterate through color spectrum
 		for e in range(256):
 			if progressDialog.wasCancelled:
 				break
-			if e not in colorBodyMapping:
+			if e not in colorProfileMapping:
 				continue
 
-			# Gather all Top Faces
-			extrudeFaces = adsk.core.ObjectCollection.create()
-			for body in colorBodyMapping[e]:
-				extrudeFace = None
-				for f in body.faces:
-					fn = f.evaluator.getNormalAtPoint(f.centroid)[1]
-					fn.normalize()
-					if fn.isEqualTo(faceNormal):
-						extrudeFace = f
-						break
-				if extrudeFace is None:
-					raise Exception('Cannot find top face of colorBody')
-				extrudeFaces.add(extrudeFace)
+			extrudeProfiles = adsk.core.ObjectCollection.createWithArray(colorProfileMapping[e])
 
 			shiftCorrection = max(min(255, e + colorShiftCorrectionInput.valueOne*0.01*255), 0)
 			pixelDistance = (depthEdgeLength-minThicknessInput.value)/255*shiftCorrection
 			futil.log(f'PixelGroup: {e} Distance: {pixelDistance}')
-			futil.log(f'\tPixels: {len(colorBodyMapping[e])}')
+			futil.log(f'\tPixels: {len(colorProfileMapping[e])}')
 
+			if pixelDistance == 0:
+				continue
+
+			extrudeInput = extrudes.createInput(extrudeProfiles, adsk.fusion.FeatureOperations.CutFeatureOperation)
+			extrudeInput.participantBodies = [face.body]
+			extrudeInput.isSolid = True
 			if not modeInput.value: # NOT FLUSH
-				extrudeInput = extrudes.createInput(extrudeFaces, adsk.fusion.FeatureOperations.CutFeatureOperation)
-				extrudeInput.participantBodies = [face.body] + colorBodyMapping[e]
-				extrudeInput.isSolid = True
-				extrudeInput.setOneSideExtent(adsk.fusion.DistanceExtentDefinition.create(adsk.core.ValueInput.createByReal(pixelDistance+patternDepth)), adsk.fusion.ExtentDirections.NegativeExtentDirection)
-				extrudes.add(extrudeInput)
-
-			else: # FLUSH
-				extrudeInput = extrudes.createInput(extrudeFaces, adsk.fusion.FeatureOperations.CutFeatureOperation)
-				extrudeInput.participantBodies = [face.body]
-				extrudeInput.isSolid = True
-				extrudeInput.startExtent = adsk.fusion.OffsetStartDefinition.create(adsk.core.ValueInput.createByReal(-(minThicknessInput.value/2+patternDepth)))
 				extrudeInput.setOneSideExtent(adsk.fusion.DistanceExtentDefinition.create(adsk.core.ValueInput.createByReal(pixelDistance)), adsk.fusion.ExtentDirections.NegativeExtentDirection)
 				exf = extrudes.add(extrudeInput)
 				if exf.healthState == adsk.fusion.FeatureHealthStates.WarningFeatureHealthState:
 					exf.deleteMe()
 
-				extrudeInput = extrudes.createInput(extrudeFaces, adsk.fusion.FeatureOperations.CutFeatureOperation)
-				extrudeInput.participantBodies = colorBodyMapping[e]
-				extrudeInput.isSolid = True
-				extrudeInput.setOneSideExtent(adsk.fusion.DistanceExtentDefinition.create(adsk.core.ValueInput.createByReal(patternDepth)), adsk.fusion.ExtentDirections.NegativeExtentDirection)
-				extrudes.add(extrudeInput)
+			else: # FLUSH
+				extrudeInput.startExtent = adsk.fusion.OffsetStartDefinition.create(adsk.core.ValueInput.createByReal(-(minThicknessInput.value/2)))
+				extrudeInput.setOneSideExtent(adsk.fusion.DistanceExtentDefinition.create(adsk.core.ValueInput.createByReal(pixelDistance)), adsk.fusion.ExtentDirections.NegativeExtentDirection)
+				exf = extrudes.add(extrudeInput)
+				if exf.healthState == adsk.fusion.FeatureHealthStates.WarningFeatureHealthState:
+					exf.deleteMe()
 
 			progressDialog.progressValue = e+1
 	
@@ -392,20 +405,9 @@ def command_execute(args: adsk.core.CommandEventArgs):
 			outlineProfiles = adsk.core.ObjectCollection.createWithArray([x for x in sketch.profiles])
 			extrudeInput = extrudes.createInput(outlineProfiles, adsk.fusion.FeatureOperations.JoinFeatureOperation)
 			extrudeInput.isSolid = True
-			extrudeInput.setThinExtrude(adsk.fusion.ThinExtrudeWallLocation.Center, adsk.core.ValueInput.createByReal(cmPerPixel[0]/flushBTInput.value))
+			extrudeInput.setThinExtrude(adsk.fusion.ThinExtrudeWallLocation.Side1, adsk.core.ValueInput.createByReal(cmPerPixel[0]/flushBTInput.value))
 			extrudeInput.setOneSideExtent(adsk.fusion.DistanceExtentDefinition.create(adsk.core.ValueInput.createByReal(depthEdgeLength)), adsk.fusion.ExtentDirections.NegativeExtentDirection)
 			extrudes.add(extrudeInput)
-
-		# Merge everything
-		if not progressDialog.wasCancelled and not modeInput.value:
-			progressDialog.message = 'Merging. (Fusion360)'
-			
-			combineFeatures = design.rootComponent.features.combineFeatures
-		
-			combineObjects = adsk.core.ObjectCollection.createWithArray([r for r in rectangularFeature.bodies])
-			combineInput = combineFeatures.createInput(face.body, combineObjects)
-			combineInput.operation = adsk.fusion.FeatureOperations.JoinFeatureOperation
-			combineFeatureList = combineFeatures.add(combineInput)
 
 		if progressDialog.wasCancelled:
 			args.executeFailed = True
@@ -776,3 +778,8 @@ def getCoEdge(edge: adsk.fusion.BRepEdge, face: adsk.fusion.BRepFace) -> adsk.fu
 			edgeCoEdge = coEdge
 			break
 	return edgeCoEdge
+
+
+# Point3D MidPoint
+def getPoint3DMidPoint(point1: adsk.core.Point3D, point2: adsk.core.Point3D):
+	return adsk.core.Point3D.create((point1.x+point2.x)/2, (point1.y+point2.y)/2, (point1.z+point2.z)/2)
