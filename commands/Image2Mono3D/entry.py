@@ -310,10 +310,11 @@ def command_execute(args: adsk.core.CommandEventArgs):
 			extrudeInput.setOneSideExtent(adsk.fusion.DistanceExtentDefinition.create(adsk.core.ValueInput.createByReal(depthEdgeLength)), adsk.fusion.ExtentDirections.NegativeExtentDirection)
 			extrudes.add(extrudeInput)
 			
-		inputEntities = adsk.core.ObjectCollection.create()
-		inputEntities.add(extrude.bodies.item(0))
+		# TODO replace rectPattern with sketch (no pattern, draw lines, not rects, map profiles to pixels)
 
+		inputEntities = adsk.core.ObjectCollection.createWithArray([extrude])
 		rectangularPatternsInput = rectangularPatterns.createInput(inputEntities, baseSketchLine, adsk.core.ValueInput.createByReal(imageWidth), adsk.core.ValueInput.createByReal(widthInputValue-cmPerPixel[0]), adsk.fusion.PatternDistanceType.ExtentPatternDistanceType)
+		rectangularPatternsInput.patternComputeOption = adsk.fusion.PatternComputeOptions.OptimizedPatternCompute
 		rectangularPatternsInput.setDirectionTwo(heightSketchLine, adsk.core.ValueInput.createByReal(imageHeight), adsk.core.ValueInput.createByReal(heightInputValue-cmPerPixel[1]))
 		rectangularFeature = rectangularPatterns.add(rectangularPatternsInput)
 	
