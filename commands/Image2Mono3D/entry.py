@@ -79,6 +79,10 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
 
 	# TODO Define the dialog for your command by adding different inputs to the command.
 
+
+
+	# TODO add tooltips
+
 	# Create image input
 	inputs.addBoolValueInput('imageSelector', 'Image', False, RESOURCES_FOLDER+"/imageSelector", False)
 	stringValueInput = inputs.addStringValueInput('selectedFileName', 'Selected Image', '')
@@ -124,9 +128,19 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
 	minThicknessInput.minimumValue = 0
 	minThicknessInput.isMinimumValueInclusive = False
 
+	# colorShiftCorrection
+	initialValue = adsk.core.ValueInput.createByReal(2)
+	colorShiftCorrection = inputs.addIntegerSliderCommandInput('colorShiftCorrectionSelector', 'Black/White distribution', -100, 100, False)
+	colorShiftCorrection.valueOne = 0
+
 	# Mode selection
 	modeInput = inputs.addBoolValueInput('modeSelector', 'Flush Surface', True, '', True)
 	modeInput.isEnabled = False
+
+	# FlushBoundaryThickness
+	initialValue = adsk.core.ValueInput.createByReal(2)
+	flushBT = inputs.addValueInput('flushBTSelector', 'Outline Factor', '', initialValue)
+	flushBT.isVisible = False
 
 	# FixBroken selection
 	fixBrokenInput = inputs.addBoolValueInput('fixBrokenSelector', 'Fix Missing Body', True, '', True)
@@ -160,6 +174,8 @@ def command_execute(args: adsk.core.CommandEventArgs):
 	modeInput = adsk.core.BoolValueCommandInput.cast(inputs.itemById('modeSelector'))
 	fixBrokenInput = adsk.core.BoolValueCommandInput.cast(inputs.itemById('fixBrokenSelector'))
 	minThicknessInput = adsk.core.DistanceValueCommandInput.cast(inputs.itemById('minThicknessSelector'))
+	flushBTInput = adsk.core.ValueCommandInput.cast(inputs.itemById('flushBTSelector'))
+	colorShiftCorrectionInput = adsk.core.IntegerSliderCommandInput.cast(inputs.itemById('colorShiftCorrectionSelector'))
 
 	face = adsk.fusion.BRepFace.cast(faceSelectorInput.selection(0).entity)
 	base = adsk.fusion.BRepEdge.cast(baseSelectorInput.selection(0).entity)
@@ -236,7 +252,6 @@ def command_execute(args: adsk.core.CommandEventArgs):
 		heightSketchLine: adsk.fusion.SketchLine = sketchLines.addByTwoPoints(origin, tv.asPoint())
 		
 		# TODO calc body thickness (not with depth Edge)
-		# TODO stretch interior option (add gap at the bottom with param)
 
 		# find depth Edge
 		depthEdge = None
@@ -341,12 +356,12 @@ def command_execute(args: adsk.core.CommandEventArgs):
 					raise Exception('Cannot find top face of colorBody')
 				extrudeFaces.add(extrudeFace)
 
+			shiftCorrection = max(min(255, e + colorShiftCorrectionInput.valueOne*0.01*255), 0)
+			pixelDistance = (depthEdgeLength-minThicknessInput.value)/255*shiftCorrection
+			futil.log(f'PixelGroup: {e} Distance: {pixelDistance}')
+			futil.log(f'\tPixels: {len(colorBodyMapping[e])}')
 
 			if not modeInput.value: # NOT FLUSH
-				
-				pixelDistance = (depthEdgeLength-minThicknessInput.value)/255*e
-				futil.log(f'PixelGroup: {e} Distance: {pixelDistance}')
-				futil.log(f'\tPixels: {len(colorBodyMapping[e])}')
 				extrudeInput = extrudes.createInput(extrudeFaces, adsk.fusion.FeatureOperations.CutFeatureOperation)
 				extrudeInput.participantBodies = [face.body] + colorBodyMapping[e]
 				extrudeInput.isSolid = True
@@ -354,10 +369,6 @@ def command_execute(args: adsk.core.CommandEventArgs):
 				extrudes.add(extrudeInput)
 
 			else: # FLUSH
-				
-				pixelDistance = (depthEdgeLength-minThicknessInput.value)/255*e
-				futil.log(f'PixelGroup: {e} Distance: {pixelDistance}')
-				futil.log(f'\tPixels: {len(colorBodyMapping[e])}')
 				extrudeInput = extrudes.createInput(extrudeFaces, adsk.fusion.FeatureOperations.CutFeatureOperation)
 				extrudeInput.participantBodies = [face.body]
 				extrudeInput.isSolid = True
@@ -375,12 +386,12 @@ def command_execute(args: adsk.core.CommandEventArgs):
 
 			progressDialog.progressValue = e+1
 	
-		if modeInput.value: # FLUSH
+		if not progressDialog.wasCancelled and modeInput.value and flushBTInput.value > 0: # FLUSH
 			
 			outlineProfiles = adsk.core.ObjectCollection.createWithArray([x for x in sketch.profiles])
 			extrudeInput = extrudes.createInput(outlineProfiles, adsk.fusion.FeatureOperations.JoinFeatureOperation)
 			extrudeInput.isSolid = True
-			extrudeInput.setThinExtrude(adsk.fusion.ThinExtrudeWallLocation.Center, adsk.core.ValueInput.createByReal(cmPerPixel[0]/5))
+			extrudeInput.setThinExtrude(adsk.fusion.ThinExtrudeWallLocation.Center, adsk.core.ValueInput.createByReal(cmPerPixel[0]/flushBTInput.value))
 			extrudeInput.setOneSideExtent(adsk.fusion.DistanceExtentDefinition.create(adsk.core.ValueInput.createByReal(depthEdgeLength)), adsk.fusion.ExtentDirections.NegativeExtentDirection)
 			extrudes.add(extrudeInput)
 
@@ -591,16 +602,19 @@ def command_input_changed(args: adsk.core.InputChangedEventArgs):
 		faceSelectorInput = adsk.core.SelectionCommandInput.cast(changed_input)
 		baseSelectionInput = adsk.core.SelectionCommandInput.cast(inputs.itemById('baseSelector'))
 		modeInput = adsk.core.BoolValueCommandInput.cast(inputs.itemById('modeSelector'))
+		flushBTInput = adsk.core.ValueCommandInput.cast(inputs.itemById('flushBTSelector'))
 		dropDownInput = adsk.core.DropDownCommandInput.cast(inputs.itemById('dropDownSelector'))
 		try:
 			face = adsk.fusion.BRepFace.cast(faceSelectorInput.selection(0).entity)
 			modeInput.isEnabled = True
+			flushBTInput.isVisible = modeInput.value
 			baseSelectionInput.isVisible = True
 			baseSelectionInput.isEnabled = True
 			
 		except:
 			futil.log(f'Exception caught: {traceback.format_exc()}')
 			modeInput.isEnabled = False
+			flushBTInput.isVisible = False
 			baseSelectionInput.isVisible = False
 			baseSelectionInput.isEnabled = False
 			updateDropDown = True
@@ -609,6 +623,8 @@ def command_input_changed(args: adsk.core.InputChangedEventArgs):
 	if changed_input.id == 'modeSelector':
 		modeInput = adsk.core.BoolValueCommandInput.cast(changed_input)
 		faceSelectorInput = adsk.core.SelectionCommandInput.cast(inputs.itemById('faceSelector'))
+		flushBTInput = adsk.core.ValueCommandInput.cast(inputs.itemById('flushBTSelector'))
+		flushBTInput.isVisible = modeInput.value
 
 	if changed_input.id == 'baseSelector':
 		faceSelectorInput = adsk.core.SelectionCommandInput.cast(inputs.itemById('faceSelector'))
@@ -690,6 +706,10 @@ def command_validate_input(args: adsk.core.ValidateInputsEventArgs):
 	
 	edgeSelector = adsk.core.SelectionCommandInput.cast(inputs.itemById('heightEdgeSelector'))
 	if edgeSelector.isVisible and not edgeSelector.selectionCount == 1:
+		args.areInputsValid = False
+
+	flushBTInput = adsk.core.ValueCommandInput.cast(inputs.itemById('flushBTSelector'))
+	if flushBTInput.isVisible and flushBTInput.value < 0:
 		args.areInputsValid = False
 
 
