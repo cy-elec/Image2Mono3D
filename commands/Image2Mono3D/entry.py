@@ -1,12 +1,11 @@
 import adsk.core, adsk.fusion
-import os, traceback, tempfile, math
+import os, traceback
 from ...lib.PIL import Image
 from ...lib import fusion360utils as futil
 from ... import config
 app = adsk.core.Application.get()
 ui = app.userInterface
 design = adsk.fusion.Design.cast(app.activeProduct)
-measureMgr = app.measureManager
 
 # TODO *** Specify the command identity information. ***
 CMD_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_image2mono3d'
@@ -31,7 +30,6 @@ RESOURCES_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'res
 # they are not released and garbage collected.
 local_handlers = []
 loadedImage = None
-tempFileName = ''
 
 # Executed when add-in is run.
 def start():
@@ -79,8 +77,8 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
 	inputs = args.command.commandInputs
 
 	# TODO Define the dialog for your command by adding different inputs to the command.
-
-
+	if design.designType == adsk.fusion.DesignTypes.ParametricDesignType:
+		ui.messageBox('This tool is optimized for direct design mode (Disabled History). Please consider switching mode.', 'Design Mode', adsk.core.MessageBoxButtonTypes.OKButtonType)
 
 	# TODO add tooltips
 
@@ -159,10 +157,18 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
 # is immediately called after the created event not command inputs were created for the dialog.
 def command_execute(args: adsk.core.CommandEventArgs):
 	# General logging for debug.
-	futil.log(f'{CMD_NAME} Command Execute Event')
+	if design.designType == adsk.fusion.DesignTypes.DirectDesignType:
+		command_executeDirect(args)
+	else:
+		command_executeParametric(args)
+
+
+def command_executeParametric(args: adsk.core.CommandEventArgs):
+	# General logging for debug.
+	futil.log(f'{CMD_NAME} Command Execute Parametric Event')
 	# Get a reference to your command's inputs.
 	inputs = args.command.commandInputs
-	
+
 	# TODO ******************************** Your code here ********************************
 
 	fileNameInput = adsk.core.StringValueCommandInput.cast(inputs.itemById('selectedFileName'))
@@ -178,7 +184,7 @@ def command_execute(args: adsk.core.CommandEventArgs):
 	flushBTInput = adsk.core.ValueCommandInput.cast(inputs.itemById('flushBTSelector'))
 	colorShiftCorrectionInput = adsk.core.IntegerSliderCommandInput.cast(inputs.itemById('colorShiftCorrectionSelector'))
 
-	realFace = adsk.fusion.BRepFace.cast(faceSelectorInput.selection(0).entity)
+	face = adsk.fusion.BRepFace.cast(faceSelectorInput.selection(0).entity)
 	base = adsk.fusion.BRepEdge.cast(baseSelectorInput.selection(0).entity)
 
 	progressDialog = ui.createProgressDialog()
@@ -186,7 +192,7 @@ def command_execute(args: adsk.core.CommandEventArgs):
 	progressDialog.isBackgroundTranslucent = False
 	progressDialog.isCancelButtonShown = True
 
-	if realFace is None or base is None:
+	if face is None or base is None:
 		return
 
 	global loadedImage
@@ -194,16 +200,7 @@ def command_execute(args: adsk.core.CommandEventArgs):
 		return
 	
 	try:
-		# tempBrepMgr = adsk.fusion.TemporaryBRepManager.get()
-		# tempBody = tempBrepMgr.copy(realFace.body)
-		# face = None
-		# for f in tempBody.faces:
-		# 	if realFace.evaluator.getNormalAtPoint(realFace.centroid)[1].isEqualTo(f.evaluator.getNormalAtPoint(f.centroid)[1]):
-		# 		face = f
-		# if face is None:
-		# 	ui.messageBox('Could not create temporary object. Execution will be signigicantly slower.')
-		face = realFace 
-
+		
 		image = loadedImage
 		imageWidth, imageHeight = image.size
 		
@@ -232,7 +229,6 @@ def command_execute(args: adsk.core.CommandEventArgs):
 		# Create new sketch, obtain creation objects
 		sketch = design.rootComponent.sketches.add(face)
 		sketchLines = sketch.sketchCurves.sketchLines
-		rectangularPatterns = design.rootComponent.features.rectangularPatternFeatures
 		extrudes = design.rootComponent.features.extrudeFeatures
 		# Outline Image region width
 		baseSketchLine: adsk.fusion.SketchLine = sketch.project(base)[0]
@@ -248,22 +244,28 @@ def command_execute(args: adsk.core.CommandEventArgs):
 		if coEdge.isOpposedToEdge:
 			origin, widthEndPoint = widthEndPoint, origin
 		
-		pixelWidthVector = origin.geometry.vectorTo(widthEndPoint.geometry)
-		pixelWidthVector.scaleBy(1/imageWidth)
-		pixelHeightVector = adsk.core.Vector3D.create(-pixelWidthVector.y, pixelWidthVector.x, 0)
-		pixelHeightVector.normalize()
-		pixelHeightVector.scaleBy(cmPerPixel[1])
+		sketchWidthVector = origin.geometry.vectorTo(widthEndPoint.geometry)
+		sketchWidthVector.scaleBy(1/imageWidth)
+		sketchHeightVector = adsk.core.Vector3D.create(-sketchWidthVector.y, sketchWidthVector.x, 0)
+		sketchHeightVector.normalize()
+		sketchHeightVector.scaleBy(cmPerPixel[1])
 
-		pixelFHeightVector = pixelHeightVector.copy()
-		pixelFHeightVector.scaleBy(imageHeight)
-		pixelFWidthVector = pixelWidthVector.copy()
-		pixelFWidthVector.scaleBy(imageWidth)
 
 		# Outline Image region height
 		tv = origin.geometry.asVector()
-		tv.add(pixelFHeightVector)
+		mv = sketchHeightVector.copy()
+		mv.scaleBy(imageHeight)
+		tv.add(mv)
 
 		heightSketchLine: adsk.fusion.SketchLine = sketchLines.addByTwoPoints(origin, tv.asPoint())
+		
+		pixelFHeightVector = heightSketchLine.startSketchPoint.worldGeometry.vectorTo(heightSketchLine.endSketchPoint.worldGeometry)
+		pixelFWidthVector = baseSketchLine.startSketchPoint.worldGeometry.vectorTo(baseSketchLine.endSketchPoint.worldGeometry)
+		
+		pixelHeightVector = pixelFHeightVector.copy()
+		pixelHeightVector.scaleBy(1/imageHeight)
+		pixelWidthVector = pixelFWidthVector.copy()
+		pixelWidthVector.scaleBy(1/imageWidth)
 		
 		# TODO calc body thickness (not with depth Edge)
 
@@ -293,19 +295,23 @@ def command_execute(args: adsk.core.CommandEventArgs):
 		depthSketchLine: adsk.fusion.SketchLine = sketchLines.addByTwoPoints(origin, tv.asPoint())
 		sketch.isVisible = False
 
+	
 		# fixBroken
 		if fixBrokenInput.value and not progressDialog.wasCancelled:
 			
 			# Create boundaries
 			tv = origin.geometry.asVector()
-			tv.add(pixelFHeightVector)
-			tv.add(pixelFWidthVector)
-			sketchLines.addTwoPointRectangle(origin, tv.asPoint())
+			mv = sketchWidthVector.copy()
+			mv.scaleBy(imageWidth)
+			tv.add(mv)
+			mv = sketchHeightVector.copy()
+			mv.scaleBy(imageHeight)
+			tv.add(mv)
 
-			tlines = sketchLines.addTwoPointRectangle(origin, tv.asPoint())
+			tlines = sketchLines.addThreePointRectangle(origin, widthEndPoint, tv.asPoint())
 			outlineProfiles = adsk.core.ObjectCollection.createWithArray([x for x in sketch.profiles])
 			extrudeInput = extrudes.createInput(outlineProfiles, adsk.fusion.FeatureOperations.JoinFeatureOperation)
-			extrudeInput.participantBodies = [face.body]
+			extrudeInput.participantBodies = []
 			extrudeInput.isSolid = True
 			extrudeInput.setOneSideExtent(adsk.fusion.DistanceExtentDefinition.create(adsk.core.ValueInput.createByReal(depthEdgeLength)), adsk.fusion.ExtentDirections.NegativeExtentDirection)
 			extrudes.add(extrudeInput)
@@ -314,30 +320,38 @@ def command_execute(args: adsk.core.CommandEventArgs):
 				l.deleteMe()
 
 		# Create Pattern
+		startXPattern = (imageWidth > imageHeight)
 		progressDialog.message = 'Sketching: %p% - %v/%m'
-		progressDialog.maximumValue = imageWidth
-		iv1 = origin.geometry.asVector()
-		for l in range(imageWidth):
-			if progressDialog.wasCancelled:
-				break
-			iv1.add(pixelWidthVector)
-			iv2 = iv1.copy()
-			iv2.add(pixelFHeightVector)
-			sketchLines.addByTwoPoints(iv1.asPoint(), iv2.asPoint())
-			progressDialog.progressValue = l+1
-		
-		progressDialog.maximumValue = imageHeight
-		iv1 = origin.geometry.asVector()
-		for l in range(imageHeight):
-			if progressDialog.wasCancelled:
-				break
-			iv1.add(pixelHeightVector)
-			iv2 = iv1.copy()
-			iv2.add(pixelFWidthVector)
-			sketchLine = sketchLines.addByTwoPoints(iv1.asPoint(), iv2.asPoint())
-			progressDialog.progressValue = l+1
+		for i in range(2):
+			if startXPattern:
+				progressDialog.maximumValue = imageWidth
+				iv1 = origin.geometry.asVector()
+				for l in range(imageWidth):
+					if progressDialog.wasCancelled:
+						break
+					iv1.add(pixelWidthVector)
+					iv2 = iv1.copy()
+					iv2.add(pixelFHeightVector)
+					sketchLines.addByTwoPoints(iv1.asPoint(), iv2.asPoint())
+					progressDialog.progressValue = l+1
+			
+			else:
+				progressDialog.maximumValue = imageHeight
+				iv1 = origin.geometry.asVector()
+				for l in range(imageHeight):
+					if progressDialog.wasCancelled:
+						break
+					iv1.add(pixelHeightVector)
+					iv2 = iv1.copy()
+					iv2.add(pixelFWidthVector)
+					sketchLine = sketchLines.addByTwoPoints(iv1.asPoint(), iv2.asPoint())
+					progressDialog.progressValue = l+1
+					
+			startXPattern = not startXPattern
 
 		# Map Profiles
+		measureMgr = app.measureManager	
+		
 		colorProfileMapping = {}
 
 		progressDialog.message = 'Mapping Pixels: %p% - %v/%m'
@@ -413,7 +427,246 @@ def command_execute(args: adsk.core.CommandEventArgs):
 			args.executeFailed = True
 			args.executeFailedMessage = 'Cancelled.'
 		progressDialog.hide()
-	except:
+	except Exception as ex:
+		futil.log(f'Exception caught: {traceback.format_exc()}')
+		args.executeFailed = True
+		args.executeFailedMessage = 'Error processing design.\n\n\n\n'+traceback.format_exc()
+
+def command_executeDirect(args: adsk.core.CommandEventArgs):
+	# General logging for debug.
+	futil.log(f'{CMD_NAME} Command Execute Direct Event')
+	# Get a reference to your command's inputs.
+	inputs = args.command.commandInputs
+
+	# TODO ******************************** Your code here ********************************
+
+	fileNameInput = adsk.core.StringValueCommandInput.cast(inputs.itemById('selectedFileName'))
+	fileName = fileNameInput.value
+	
+	faceSelectorInput = adsk.core.SelectionCommandInput.cast(inputs.itemById('faceSelector'))
+	baseSelectorInput = adsk.core.SelectionCommandInput.cast(inputs.itemById('baseSelector'))
+	edgeSelectorInput = adsk.core.SelectionCommandInput.cast(inputs.itemById('heightEdgeSelector'))
+	heightInput = adsk.core.DistanceValueCommandInput.cast(inputs.itemById('heightSelector'))
+	modeInput = adsk.core.BoolValueCommandInput.cast(inputs.itemById('modeSelector'))
+	fixBrokenInput = adsk.core.BoolValueCommandInput.cast(inputs.itemById('fixBrokenSelector'))
+	minThicknessInput = adsk.core.DistanceValueCommandInput.cast(inputs.itemById('minThicknessSelector'))
+	flushBTInput = adsk.core.ValueCommandInput.cast(inputs.itemById('flushBTSelector'))
+	colorShiftCorrectionInput = adsk.core.IntegerSliderCommandInput.cast(inputs.itemById('colorShiftCorrectionSelector'))
+
+	face = adsk.fusion.BRepFace.cast(faceSelectorInput.selection(0).entity)
+	base = adsk.fusion.BRepEdge.cast(baseSelectorInput.selection(0).entity)
+
+	progressDialog = ui.createProgressDialog()
+	progressDialog.cancelButtonText = 'Cancel'
+	progressDialog.isBackgroundTranslucent = False
+	progressDialog.isCancelButtonShown = True
+
+	if face is None or base is None:
+		return
+
+	global loadedImage
+	if loadedImage is None or not len(fileName) > 0:
+		return
+	
+	try:
+		image = loadedImage
+		imageWidth, imageHeight = image.size
+		
+		# Load image
+		loadedImage = loadedImage.transpose(Image.FLIP_TOP_BOTTOM)
+		imageAsLine = list(loadedImage.getdata())
+		futil.log('Image Raw: '+str(imageAsLine))
+
+		progressDialog.show('Generating Mono3D', 'Loading...', 0, 100, 0)
+		
+		widthInputValue = base.length
+		cmPerPixel = (widthInputValue/imageWidth, 0)
+
+		heightInputValue = cmPerPixel[0]*imageHeight
+		if edgeSelectorInput.isVisible:
+			edge = adsk.fusion.BRepEdge.cast(edgeSelectorInput.selection(0).entity)
+			heightInputValue = edge.length
+		elif heightInput.isVisible:
+			heightInputValue = heightInput.value
+
+		cmPerPixel = (cmPerPixel[0], heightInputValue/imageHeight)
+		
+		# Create new sketch, obtain creation objects
+		sketch = design.rootComponent.sketches.add(face)
+		sketchLines = sketch.sketchCurves.sketchLines
+		extrudes = design.rootComponent.features.extrudeFeatures
+		# Outline Image region width
+		baseSketchLine: adsk.fusion.SketchLine = sketch.project(base)[0]
+		
+		# Calculate pixelVectors
+		coEdge = getCoEdge(base, face)
+		if coEdge is None:
+			raise Exception('No CoEdge found')
+
+		origin = baseSketchLine.startSketchPoint
+		widthEndPoint = baseSketchLine.endSketchPoint
+
+		if coEdge.isOpposedToEdge:
+			origin, widthEndPoint = widthEndPoint, origin
+		
+		sketchWidthVector = origin.geometry.vectorTo(widthEndPoint.geometry)
+		sketchWidthVector.scaleBy(1/imageWidth)
+		sketchHeightVector = adsk.core.Vector3D.create(-sketchWidthVector.y, sketchWidthVector.x, 0)
+		sketchHeightVector.normalize()
+		sketchHeightVector.scaleBy(cmPerPixel[1])
+
+
+		# Outline Image region height
+		tv = origin.geometry.asVector()
+		mv = sketchHeightVector.copy()
+		mv.scaleBy(imageHeight)
+		tv.add(mv)
+
+		heightSketchLine: adsk.fusion.SketchLine = sketchLines.addByTwoPoints(origin, tv.asPoint())
+		
+		pixelFHeightVector = heightSketchLine.startSketchPoint.worldGeometry.vectorTo(heightSketchLine.endSketchPoint.worldGeometry)
+		pixelFWidthVector = baseSketchLine.startSketchPoint.worldGeometry.vectorTo(baseSketchLine.endSketchPoint.worldGeometry)
+		
+		pixelHeightVector = pixelFHeightVector.copy()
+		pixelHeightVector.scaleBy(1/imageHeight)
+		pixelWidthVector = pixelFWidthVector.copy()
+		pixelWidthVector.scaleBy(1/imageWidth)
+
+		# TODO calc body thickness (not with depth Edge)
+
+		# find depth Edge
+		depthEdge = None
+		for bedges in face.body.edges:
+			bedgeVect = bedges.evaluator.getEndPoints()[1].vectorTo(bedges.evaluator.getEndPoints()[2])
+			if not bedgeVect.isParallelTo(face.evaluator.getNormalAtPoint(origin.worldGeometry)[1]):
+				continue
+			if bedges.startVertex == base.startVertex or bedges.startVertex == base.endVertex or bedges.endVertex == base.startVertex or bedges.endVertex == base.endVertex:
+				depthEdge = bedges
+				break
+		if depthEdge is None:
+			raise Exception('Cannot determine object depth.')
+
+		depthEdgeLength = depthEdge.length
+
+		if minThicknessInput.value >= depthEdgeLength:
+			raise Exception('Minimum Depth exceeds object depth.')
+
+		# Outline Image depth
+		nv = face.evaluator.getNormalAtPoint(origin.worldGeometry)[1]
+		nv.normalize()
+		nv.scaleBy(-depthEdgeLength)
+		tv = origin.geometry.asVector()
+		tv.add(nv)
+		depthSketchLine: adsk.fusion.SketchLine = sketchLines.addByTwoPoints(origin, tv.asPoint())
+		sketch.isVisible = False
+
+		# fixBroken
+		if fixBrokenInput.value and not progressDialog.wasCancelled:
+			
+			# Create boundaries
+			tv = origin.geometry.asVector()
+			mv = sketchWidthVector.copy()
+			mv.scaleBy(imageWidth)
+			tv.add(mv)
+			mv = sketchHeightVector.copy()
+			mv.scaleBy(imageHeight)
+			tv.add(mv)
+
+			tlines = sketchLines.addThreePointRectangle(origin, widthEndPoint, tv.asPoint())
+			outlineProfiles = adsk.core.ObjectCollection.createWithArray([x for x in sketch.profiles])
+			extrudeInput = extrudes.createInput(outlineProfiles, adsk.fusion.FeatureOperations.JoinFeatureOperation)
+			extrudeInput.participantBodies = [face.body]
+			extrudeInput.isSolid = True
+			extrudeInput.setOneSideExtent(adsk.fusion.DistanceExtentDefinition.create(adsk.core.ValueInput.createByReal(depthEdgeLength)), adsk.fusion.ExtentDirections.NegativeExtentDirection)
+			extrudes.add(extrudeInput)
+
+		# Index Pixels
+		pixelOriginIndex = {}
+
+		progressDialog.message = 'Indexing Pixels: %p% - %v/%m'
+		progressDialog.maximumValue = imageWidth*imageHeight
+		for pixelIndex in range(imageWidth*imageHeight):
+			if progressDialog.wasCancelled:
+				break
+			pHI = pixelIndex // imageWidth
+			pWI = pixelIndex % imageWidth
+			tv = origin.worldGeometry.asVector()
+			mvH = pixelHeightVector.copy()
+			mvH.scaleBy(pHI+0.5)
+			tv.add(mvH)
+			mvW = pixelWidthVector.copy()
+			mvW.scaleBy(pWI+0.5)
+			tv.add(mvW)
+
+			pixelOriginIndex.setdefault(imageAsLine[pixelIndex], []).append(tv.asPoint())
+			progressDialog.progressValue = pixelIndex+1
+
+		
+		# Modelling
+		progressDialog.message = 'Modelling: %p% - %v/%m shades'
+		progressDialog.maximumValue = 256
+		
+		faceNormal = face.evaluator.getNormalAtPoint(face.centroid)[1]
+		faceNormal.normalize()
+		
+		tempBrepMgr = adsk.fusion.TemporaryBRepManager.get()
+
+		faceTempBody = tempBrepMgr.copy(face.body)
+
+		futil.log(f'Depth: {depthEdgeLength}')
+
+		# Iterate through color spectrum
+		for e in range(256):
+			if progressDialog.wasCancelled:
+				break
+			if e not in pixelOriginIndex:
+				continue
+
+			shiftCorrection = max(min(255, e + colorShiftCorrectionInput.valueOne*0.01*255), 0)
+			pixelDistance = (depthEdgeLength-minThicknessInput.value)/255*shiftCorrection
+			futil.log(f'PixelGroup: {e} Distance: {pixelDistance}')
+			futil.log(f'\tPixels: {len(pixelOriginIndex[e])}')
+
+			if pixelDistance == 0:
+				continue
+
+			bodies = adsk.core.ObjectCollection.create()
+			for op in pixelOriginIndex[e]:
+				sop = op.asVector()
+				fns = faceNormal.copy()
+				fns.scaleBy(-pixelDistance/2)
+				sop.add(fns)
+				if modeInput.value: # FLUSH
+					fns = faceNormal.copy()
+					fns.scaleBy(-minThicknessInput.value/2)
+					sop.add(fns)
+				op = sop.asPoint()
+
+				orientedBox = adsk.core.OrientedBoundingBox3D.create(op, pixelWidthVector, pixelHeightVector, cmPerPixel[0], cmPerPixel[1], pixelDistance)
+				tempBody = tempBrepMgr.createBox(orientedBox)
+				bodies.add(tempBody)
+				tempBrepMgr.booleanOperation(faceTempBody, tempBody, adsk.fusion.BooleanTypes.DifferenceBooleanType)
+
+			progressDialog.progressValue = e+1
+		newbody = design.rootComponent.bRepBodies.add(faceTempBody)
+		newbody.name = 'Image2Mono3D'
+		face.body.isVisible = False
+
+		if not progressDialog.wasCancelled and modeInput.value and flushBTInput.value > 0: # FLUSH	
+			outlineProfiles = adsk.core.ObjectCollection.createWithArray([x for x in sketch.profiles])
+			extrudeInput = extrudes.createInput(outlineProfiles, adsk.fusion.FeatureOperations.JoinFeatureOperation)
+			extrudeInput.isSolid = True
+			extrudeInput.participantBodies = [newbody]
+			extrudeInput.setThinExtrude(adsk.fusion.ThinExtrudeWallLocation.Side1, adsk.core.ValueInput.createByReal(cmPerPixel[0]/flushBTInput.value))
+			extrudeInput.setOneSideExtent(adsk.fusion.DistanceExtentDefinition.create(adsk.core.ValueInput.createByReal(depthEdgeLength)), adsk.fusion.ExtentDirections.NegativeExtentDirection)
+			extrudes.add(extrudeInput)
+
+		if progressDialog.wasCancelled:
+			args.executeFailed = True
+			args.executeFailedMessage = 'Cancelled.'
+		progressDialog.hide()
+		
+	except Exception as ex:
 		futil.log(f'Exception caught: {traceback.format_exc()}')
 		args.executeFailed = True
 		args.executeFailedMessage = 'Error processing design.\n\n\n\n'+traceback.format_exc()
@@ -475,38 +728,40 @@ def command_preview(args: adsk.core.CommandEventArgs):
 		if coEdge is None:
 			raise Exception('No CoEdge found')
 
-		sketchOrigin = baseSketchLine.startSketchPoint
-		sketchWidthEndPoint = baseSketchLine.endSketchPoint
+		origin = baseSketchLine.startSketchPoint
+		widthEndPoint = baseSketchLine.endSketchPoint
 
 		if coEdge.isOpposedToEdge:
-			sketchOrigin, sketchWidthEndPoint = sketchWidthEndPoint, sketchOrigin
+			origin, widthEndPoint = widthEndPoint, origin
 		
-		pixelWidthVector = sketchOrigin.geometry.vectorTo(sketchWidthEndPoint.geometry)
-		pixelWidthVector.scaleBy(1/imageWidth)
-		pixelHeightVector = adsk.core.Vector3D.create(-pixelWidthVector.y, pixelWidthVector.x, 0)
-		pixelHeightVector.normalize()
-		pixelHeightVector.scaleBy(cmPerPixel[1])
+		sketchWidthVector = origin.geometry.vectorTo(widthEndPoint.geometry)
+		sketchWidthVector.scaleBy(1/imageWidth)
+		sketchHeightVector = adsk.core.Vector3D.create(-sketchWidthVector.y, sketchWidthVector.x, 0)
+		sketchHeightVector.normalize()
+		sketchHeightVector.scaleBy(cmPerPixel[1])
 
-		pixelFHeightVector = pixelHeightVector.copy()
-		pixelFHeightVector.scaleBy(imageHeight)
-		pixelFWidthVector = pixelWidthVector.copy()
-		pixelFWidthVector.scaleBy(imageWidth)
 
 		# Outline Image region height
-		tv = sketchOrigin.geometry.asVector()
-		tv.add(pixelFHeightVector)
+		tv = origin.geometry.asVector()
+		mv = sketchHeightVector.copy()
+		mv.scaleBy(imageHeight)
+		tv.add(mv)
 
-		heightSketchLine: adsk.fusion.SketchLine = sketchLines.addByTwoPoints(sketchOrigin, tv.asPoint())
+		heightSketchLine: adsk.fusion.SketchLine = sketchLines.addByTwoPoints(origin, tv.asPoint())
 		
-		# Create boundaries
-		tv.add(pixelFWidthVector)
-		sketchLines.addTwoPointRectangle(sketchOrigin, tv.asPoint())
+		pixelFHeightVector = heightSketchLine.startSketchPoint.worldGeometry.vectorTo(heightSketchLine.endSketchPoint.worldGeometry)
+		pixelFWidthVector = baseSketchLine.startSketchPoint.worldGeometry.vectorTo(baseSketchLine.endSketchPoint.worldGeometry)
+		
+		pixelHeightVector = pixelFHeightVector.copy()
+		pixelHeightVector.scaleBy(1/imageHeight)
+		pixelWidthVector = pixelFWidthVector.copy()
+		pixelWidthVector.scaleBy(1/imageWidth)
 
 		# find depth Edge
 		depthEdge = None
 		for bedges in face.body.edges:
 			bedgeVect = bedges.evaluator.getEndPoints()[1].vectorTo(bedges.evaluator.getEndPoints()[2])
-			if not bedgeVect.isParallelTo(face.evaluator.getNormalAtPoint(sketchOrigin.worldGeometry)[1]):
+			if not bedgeVect.isParallelTo(face.evaluator.getNormalAtPoint(origin.worldGeometry)[1]):
 				continue
 			if bedges.startVertex == base.startVertex or bedges.startVertex == base.endVertex or bedges.endVertex == base.startVertex or bedges.endVertex == base.endVertex:
 				depthEdge = bedges
@@ -515,59 +770,33 @@ def command_preview(args: adsk.core.CommandEventArgs):
 			raise Exception('Cannot determine object depth.')
 
 		# Outline Image depth
-		nv = face.evaluator.getNormalAtPoint(sketchOrigin.worldGeometry)[1]
+		nv = face.evaluator.getNormalAtPoint(origin.worldGeometry)[1]
 		nv.normalize()
 		nv.scaleBy(-depthEdge.length)
-		tv = sketchOrigin.geometry.asVector()
+		tv = origin.geometry.asVector()
 		tv.add(nv)
-		depthSketchLine: adsk.fusion.SketchLine = sketchLines.addByTwoPoints(sketchOrigin, tv.asPoint())
+		depthSketchLine: adsk.fusion.SketchLine = sketchLines.addByTwoPoints(origin, tv.asPoint())
 		
-		# prepare extrusion, wait for canvas
-		inputProfiles = adsk.core.ObjectCollection.createWithArray([x for x in sketch.profiles])
-		
-		# Save image as tmpFile to use as Canvas, tmp file is deleted after with scope
-		global tempFileName
-		if len(tempFileName) > 0:
-			os.remove(tempFileName)
-			tempFileName = ''
-
-		# Canvas preview
-		with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tf:
-			tempFileName = tf.name
-			loadedImage.save(tf, 'PNG')
-			tf.close()
-			# Create canvas
-
-			bounds = face.evaluator.parametricRange()
-			uvCenter = adsk.core.Point2D.create(0, 0)
-		
-			v2D1 = adsk.core.Vector2D.create(pixelFWidthVector.asArray()[0], pixelFWidthVector.asArray()[1])
-			v2D2 = adsk.core.Vector2D.create(pixelFHeightVector.asArray()[0], pixelFHeightVector.asArray()[1])
-		
-			canvasInput = design.rootComponent.canvases.createInput(tempFileName, face)
-			bounds = face.evaluator.parametricRange()
-			uvCenter = adsk.core.Point2D.create((bounds.minPoint.x + bounds.maxPoint.x)/2, (bounds.minPoint.y + bounds.maxPoint.y)/2)
-			vectorToTarget = uvCenter.vectorTo(coEdge.evaluator.getEndPoints()[1])
-			if face.isParamReversed:
-				vectorToTarget.x *= -1
-				
-			matrix = adsk.core.Matrix2D.create()
-			matrixOriginVect = uvCenter.asVector()
-			matrixOriginVect.add(vectorToTarget)
-			matrix = canvasInput.transform
-			matrix.setWithCoordinateSystem(matrixOriginVect.asPoint(), v2D1, v2D2)
-			canvasInput.transform = matrix
-			canvasInput.opacity = 100
-			canvas = design.rootComponent.canvases.add(canvasInput)
-
 		# extrude after canvas
 		if fixBrokenInput.value:
+			# Create boundaries
+			tv = origin.geometry.asVector()
+			mv = sketchWidthVector.copy()
+			mv.scaleBy(imageWidth)
+			tv.add(mv)
+			mv = sketchHeightVector.copy()
+			mv.scaleBy(imageHeight)
+			tv.add(mv)
+
+			tlines = sketchLines.addThreePointRectangle(origin, widthEndPoint, tv.asPoint())
+			# prepare extrusion, wait for canvas
+			inputProfiles = adsk.core.ObjectCollection.createWithArray([x for x in sketch.profiles])
 			extrude = extrudes.addSimple(inputProfiles, adsk.core.ValueInput.createByReal(-depthEdge.length), adsk.fusion.FeatureOperations.JoinFeatureOperation)
 
-
-	except:
+			sketch.isVisible = True
+	except Exception as ex:
 		futil.log(f'Exception caught: {traceback.format_exc()}')
-		ui.messageBox('Error processing preview')
+		ui.messageBox('Error processing preview: '+str(ex))
 
 # This event handler is called when the user changes anything in the command dialog
 # allowing you to modify values of other inputs based on that change.
@@ -592,9 +821,9 @@ def command_input_changed(args: adsk.core.InputChangedEventArgs):
 				image = Image.open(fileName).convert('L')
 				image.verify()
 				loadedImage = image
-			except:
+			except Exception as ex:
 				futil.log(f'Exception caught: {traceback.format_exc()}')
-				ui.messageBox('Invalid Image File')
+				ui.messageBox('Invalid Image File: '+str(ex))
 				fileName = ''
 				loadedImage = None
 
@@ -614,7 +843,7 @@ def command_input_changed(args: adsk.core.InputChangedEventArgs):
 			baseSelectionInput.isVisible = True
 			baseSelectionInput.isEnabled = True
 			
-		except:
+		except Exception as ex:
 			futil.log(f'Exception caught: {traceback.format_exc()}')
 			modeInput.isEnabled = False
 			flushBTInput.isVisible = False
@@ -648,8 +877,6 @@ def command_input_changed(args: adsk.core.InputChangedEventArgs):
 			if coEdge is None:
 				raise Exception('No CoEdge found')
 
-			# TODO draft edges issue
-
 			edgeEndPoints = edge.evaluator.getEndPoints()[1:]
 			if coEdge.isOpposedToEdge:
 				edgeEndPoints = edgeEndPoints[::-1]
@@ -659,7 +886,7 @@ def command_input_changed(args: adsk.core.InputChangedEventArgs):
 			paramVector.normalize()
 
 			distanceSelector.setManipulator(edgeEndPoints[0], paramVector)
-		except:
+		except Exception as ex:
 			futil.log(f'Exception caught: {traceback.format_exc()}')
 			dropDownInput.isVisible = False
 
@@ -715,7 +942,6 @@ def command_validate_input(args: adsk.core.ValidateInputsEventArgs):
 	if flushBTInput.isVisible and flushBTInput.value < 0:
 		args.areInputsValid = False
 
-
 # This event handler is called when the selection changes.
 def command_select(args: adsk.core.SelectionEventArgs):
 	# General logging for debug.
@@ -732,7 +958,7 @@ def command_select(args: adsk.core.SelectionEventArgs):
 			base = adsk.fusion.BRepEdge.cast(args.selection.entity)
 			if face not in base.faces:
 				args.isSelectable = False
-		except:
+		except Exception as ex:
 			futil.log(f'Exception caught: {traceback.format_exc()}')
 			args.isSelectable = False
 	
@@ -752,7 +978,7 @@ def command_select(args: adsk.core.SelectionEventArgs):
 			v2 = edgePoints[0].vectorTo(edgePoints[1])
 			if not v1.isPerpendicularTo(v2):
 				args.isSelectable = False
-		except:
+		except Exception as ex:
 			futil.log(f'Exception caught: {traceback.format_exc()}')
 			args.isSelectable = False
 
@@ -764,10 +990,6 @@ def command_destroy(args: adsk.core.CommandEventArgs):
 
 	global local_handlers
 	local_handlers = []
-	global tempFileName
-	if len(tempFileName) > 0:
-		os.remove(tempFileName)
-		tempFileName = ''
 
 
 # Return BRepCoEdge of edge and face
