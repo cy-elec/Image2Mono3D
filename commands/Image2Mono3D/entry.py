@@ -647,8 +647,10 @@ def command_executeDirect(args: adsk.core.CommandEventArgs):
 			extrudeInput.participantBodies = [newbody]
 			extrudeInput.setThinExtrude(adsk.fusion.ThinExtrudeWallLocation.Side1, adsk.core.ValueInput.createByReal(cmPerPixel[0]/flushBTInput.value))
 			extrudeInput.setOneSideExtent(adsk.fusion.DistanceExtentDefinition.create(adsk.core.ValueInput.createByReal(depth)), adsk.fusion.ExtentDirections.NegativeExtentDirection)
-			extrudes.add(extrudeInput)
-
+			try:
+				extrudes.add(extrudeInput)
+			except:
+				pass
 		if progressDialog.wasCancelled:
 			args.executeFailed = True
 			args.executeFailedMessage = 'Cancelled.'
