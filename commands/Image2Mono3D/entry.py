@@ -468,7 +468,10 @@ def command_executeDirect(args: adsk.core.CommandEventArgs):
 		loadedImage = loadedImage.transpose(Image.FLIP_TOP_BOTTOM)
 		imageAsLine = list(loadedImage.getdata())
 		futil.log('Image Raw: '+str(imageAsLine))
-
+		futil.log(f'Image Size: {imageWidth*imageHeight}px')
+		if imageWidth*imageHeight > 50000 and ui.messageBox(f'This process can take several minutes depending on the size of the image.\nContinue?\n\nPixels to be processed: {imageWidth*imageHeight}','Expensive Operations Warning', adsk.core.MessageBoxButtonTypes.OKCancelButtonType) != adsk.core.DialogResults.DialogOK:
+			return
+		
 		progressDialog.show('Generating Mono3D', 'Loading...', 0, 100, 0)
 		
 		widthInputValue = base.length
