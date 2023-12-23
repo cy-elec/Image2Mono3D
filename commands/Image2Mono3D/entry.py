@@ -398,8 +398,8 @@ def command_executeParametric(args: adsk.core.CommandEventArgs):
 					exf.deleteMe()
 
 			else: # FLUSH
-				extrudeInput.startExtent = adsk.fusion.OffsetStartDefinition.create(adsk.core.ValueInput.createByReal(-(minThicknessInput.value/2)))
-				extrudeInput.setOneSideExtent(adsk.fusion.DistanceExtentDefinition.create(adsk.core.ValueInput.createByReal(pixelDistance)), adsk.fusion.ExtentDirections.NegativeExtentDirection)
+				extrudeInput.startExtent = adsk.fusion.OffsetStartDefinition.create(adsk.core.ValueInput.createByReal(-(depth-minThicknessInput.value/2)))
+				extrudeInput.setOneSideExtent(adsk.fusion.DistanceExtentDefinition.create(adsk.core.ValueInput.createByReal(pixelDistance)), adsk.fusion.ExtentDirections.PositiveExtentDirection)
 				exf = extrudes.add(extrudeInput)
 				if exf.healthState == adsk.fusion.FeatureHealthStates.WarningFeatureHealthState:
 					exf.deleteMe()
@@ -626,7 +626,7 @@ def command_executeDirect(args: adsk.core.CommandEventArgs):
 				sop.add(fns)
 				if modeInput.value: # FLUSH
 					fns = faceNormal.copy()
-					fns.scaleBy(-minThicknessInput.value/2)
+					fns.scaleBy(-(depth-pixelDistance-minThicknessInput.value/2))
 					sop.add(fns)
 				op = sop.asPoint()
 
