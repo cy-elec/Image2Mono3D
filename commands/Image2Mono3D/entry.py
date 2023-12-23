@@ -153,6 +153,8 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
 	fixBrokenInput = inputs.addBoolValueInput('fixBrokenSelector', 'Fix Missing Body', True, '', True)
 	fixBrokenInput.tooltip = 'Ensures that the whole image is rendered.\n\nTurn this off if you want to truncate the image to a given body. However, for tilted surfaces in flush mode, this might lead to revealed spots.'
 
+	support = inputs.addBoolValueInput('supportDevSelector', 'Support the Dev', False, RESOURCES_FOLDER+"/supportDev", False)
+
 	# TODO Connect to the events that are needed by this command.
 	futil.add_handler(args.command.execute, command_execute, local_handlers=local_handlers)
 	futil.add_handler(args.command.inputChanged, command_input_changed, local_handlers=local_handlers)
@@ -916,6 +918,8 @@ def command_input_changed(args: adsk.core.InputChangedEventArgs):
 			edgeSelector.isEnabled = True
 			distanceSelector.isVisible = False
 
+	if changed_input.id == 'supportDevSelector':
+		Image.open(RESOURCES_FOLDER+"/supportDev/qrcode.png").show()
 
 	# General logging for debug.
 	futil.log(f'{CMD_NAME} Input Changed Event fired from a change to {changed_input.id}')
