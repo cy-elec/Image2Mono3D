@@ -5,8 +5,12 @@ It provides a single command, named 'Image2Mono3D' under the Solid Modify pane.
 For multiple reasons, and mainly performance, it is recommended to run this tool in direct modelling environment.
 However, for smaller images, the tool runs similarly fast in parametric design.
 
-Install the tool directly from the store [here]() or manually using a copy of this repository - note the missing libraries mentioned in [Dependencies](#Dependencies-not-included-in-this-repo).
+Install the tool directly from the store [here](https://apps.autodesk.com/Detail/Index?id=3176639410093050089&appLang=en&os=Win32_64&mode=preview) or manually using a copy of this repository - note the missing libraries mentioned in [Dependencies](#Dependencies-not-included-in-this-repo).
 More information about the installation can be found [here](https://www.autodesk.com/support/technical/article/caas/sfdcarticles/sfdcarticles/How-to-install-an-ADD-IN-and-Script-in-Fusion-360.html).
+Uninstalling the add-in only works by deleting the source folder, regardless how it's been installed:
+- Within Fusion, head to Toolbar >Utilities > Add-ins > Scripts and Add-ins
+- Right-click the Add-in and select Open File Location.
+- Delete the folder named 'Image2Mono3D'
 
 ### Dependencies not included in this repo
 - [Pillow](https://python-pillow.org/)
