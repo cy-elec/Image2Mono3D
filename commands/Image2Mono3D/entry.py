@@ -7,6 +7,8 @@ app = adsk.core.Application.get()
 ui = app.userInterface
 design = adsk.fusion.Design.cast(app.activeProduct)
 
+warning_showed = False
+
 # TODO *** Specify the command identity information. ***
 CMD_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_image2mono3d'
 CMD_NAME = 'Image to Monochrome 3D'
@@ -77,10 +79,10 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
 	inputs = args.command.commandInputs
 
 	# TODO Define the dialog for your command by adding different inputs to the command.
-	if design.designType == adsk.fusion.DesignTypes.ParametricDesignType:
+	global warning_showed
+	if not warning_showed and design.designType == adsk.fusion.DesignTypes.ParametricDesignType:
 		ui.messageBox('This tool is optimized for direct design mode (Disabled History). Please consider switching mode.', 'Design Mode', adsk.core.MessageBoxButtonTypes.OKButtonType)
-
-	# TODO add tooltips
+		warning_showed = True
 
 	# Create image input
 	inputs.addBoolValueInput('imageSelector', 'Image', False, RESOURCES_FOLDER+"/imageSelector", False)
@@ -98,6 +100,7 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
 	selectionInput.setSelectionLimits(0)
 	selectionInput.isVisible = False
 	selectionInput.isEnabled = False
+	selectionInput.tooltip = 'Select base to align bottom edge of the picture to.'
 	
 	# Create image height mode
 	dropDownInput = inputs.addDropDownCommandInput('dropDownSelector', 'Height Mode', adsk.core.DropDownStyles.TextListDropDownStyle)
@@ -113,6 +116,7 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
 	selectionInput.setSelectionLimits(0)
 	selectionInput.isVisible = False
 	selectionInput.isEnabled = False
+	selectionInput.tooltip = 'Perpendicular to base. Use as height indicator.'
 
 	# Create image height distance
 	initialValue = adsk.core.ValueInput.createByReal(0.1)
@@ -127,6 +131,7 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
 	minThicknessInput.minimumValue = 0
 	minThicknessInput.isMinimumValueInclusive = False
 	minThicknessInput.isVisible = False
+	minThicknessInput.tooltip = 'Minimum Depth (Strength) of the resulting object. In Flush Mode it\'s split half-half for top/bottom.'
 
 	# colorShiftCorrection
 	initialValue = adsk.core.ValueInput.createByReal(2)
@@ -136,15 +141,18 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
 	# Mode selection
 	modeInput = inputs.addBoolValueInput('modeSelector', 'Flush Surface', True, '', True)
 	modeInput.isEnabled = False
+	modeInput.tooltip = 'Flush Mode will draw an additional layer around the object, rendering the litho within the object.\n\nTry disabling it for the classic litho look.'
 
 	# FlushBoundaryThickness
 	initialValue = adsk.core.ValueInput.createByReal(2)
 	flushBT = inputs.addValueInput('flushBTSelector', 'Outline Factor', '', initialValue)
 	flushBT.isVisible = False
+	flushBT.tooltip = 'Factor for the outline border. Increasing this will decrease the border width, leaving more of the outer pixel border.'
 
 	# FixBroken selection
 	fixBrokenInput = inputs.addBoolValueInput('fixBrokenSelector', 'Fix Missing Body', True, '', True)
-	
+	fixBrokenInput.tooltip = 'Ensures that the whole image is rendered.\n\nTurn this off if you want to truncate the image to a given body. However, for tilted surfaces in flush mode, this might lead to revealed spots.'
+
 	# TODO Connect to the events that are needed by this command.
 	futil.add_handler(args.command.execute, command_execute, local_handlers=local_handlers)
 	futil.add_handler(args.command.inputChanged, command_input_changed, local_handlers=local_handlers)
