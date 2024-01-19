@@ -79,6 +79,7 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
 	inputs = args.command.commandInputs
 
 	# TODO Define the dialog for your command by adding different inputs to the command.
+	global design
 	design = adsk.fusion.Design.cast(app.activeProduct)
 	global warning_showed
 	if not warning_showed and design.designType == adsk.fusion.DesignTypes.ParametricDesignType:
