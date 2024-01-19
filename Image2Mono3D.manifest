@@ -6,7 +6,7 @@
 	"description":	{
 		"":	"Create a monochrome 3D (litho) representation of a provided image."
 	},
-	"version":	"v1.0.0",
+	"version":	"v1.0.1",
 	"runOnStartup":	true,
 	"supportedOS":	"windows|mac|linux",
 	"editEnabled":	false
